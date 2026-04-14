@@ -1,2 +1,3 @@
-# FlyAllShips
-Let you use all functional ships in the game.
+# Fly All Ships
+
+Let you use **all** functional ships in the game.
