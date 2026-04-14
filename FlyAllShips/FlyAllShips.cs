@@ -141,7 +141,7 @@ namespace FlyAllShips {
                 ModHelper.Events.Unity.FireInNUpdates(() => {
                     playerSpawner = Locator.GetPlayerBody().GetComponent<PlayerSpawner>();
                     GlobalMessenger.AddListener("ExitFlightConsole", new Callback(this.OnExitFlightConsole));
-                    Locator.GetPromptManager().AddScreenPrompt(enterShipPrompt, PromptPosition.Center, false);
+                    Locator.GetPromptManager().AddScreenPrompt(enterShipPrompt, PromptPosition.Center, false);//TODO why are there two screen prompts???
                 }, 70);
             }
         }
@@ -247,7 +247,7 @@ namespace FlyAllShips {
                 if(upward.magnitude > initAltitude || titleShipSpeed.y > 0) {
                     titleShipSpeed.y -= Time.deltaTime * 2;//simulate gravity
                     titleShipParent.RotateAround(titleShipParent.position, titleShip.TransformDirection(Vector3.right), Time.deltaTime * titleShipSpeed.z);
-                    titleShipParent.RotateAround(titleShipParent.position, titleShip.TransformDirection(Vector3.up), Time.deltaTime * titleShipSpeed.x);
+                    titleShipParent.RotateAround(titleShipParent.position, upward, Time.deltaTime * titleShipSpeed.x);
                     titleShip.position += upward.normalized * Time.deltaTime * titleShipSpeed.y;
                 } else {
                     titleShipSpeed = Vector3.zero;
