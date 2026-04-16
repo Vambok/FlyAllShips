@@ -10,12 +10,12 @@ namespace FlyAllShips {
         Transform titleShip, titleShipParent;
         readonly GameObject[] titleThrusters = new GameObject[8];
         float initAltitude = 0;
-        Vector3 titleShipSpeed = Vector3.zero;
+        Vector4 titleShipSpeed = Vector4.zero;
 
-        Transform thPlanet;
         PlayerSpawner playerSpawner;
         Transform player;
         Transform ship;
+        GameObject dummyShip;
         string insideSomeShip = "";
         ScreenPrompt enterShipPrompt;
         readonly Dictionary<string, (Transform transform, Vector3 offset, Vector3 rotation)> shipDict = [];
@@ -87,7 +87,6 @@ namespace FlyAllShips {
             } else if(newScene == OWScene.SolarSystem) {
                 ModHelper.Console.WriteLine("Loaded into solar system!", MessageType.Success);
 
-                thPlanet = GameObject.Find("TimberHearth_Body").transform;
                 player = GameObject.Find("Player_Body/PlayerCamera").transform;
                 ship = GameObject.Find("Ship_Body").transform;
                 enterShipPrompt = new ScreenPrompt(InputLibrary.interact, "Enter ship");
@@ -114,17 +113,18 @@ namespace FlyAllShips {
                     interacVol._usableInShip = false;
                     interacVol._screenPrompt = enterShipPrompt;
                     //ADD interact events
-                    interacVol.OnGainFocus += () => { enterShipPrompt._text = $"Enter {shipName}"; enterShipPrompt.SetVisibility(true); };
+                    interacVol.OnGainFocus += () => { enterShipPrompt.SetText($"Enter {shipName}"); enterShipPrompt.SetVisibility(true); };
                     interacVol.OnLoseFocus += () => { enterShipPrompt.SetVisibility(false); };
                     interacVol.OnPressInteract += () => {
                         if(insideSomeShip == "") {
-                                ship.position = shipTr.TransformPoint(offset);
-                                ship.rotation = shipTr.rotation;
-                                ship.localEulerAngles += rotation;
-                                shipTr.gameObject.SetActive(false);
-                                playerSpawner.DebugWarp(playerSpawner.GetSpawnPoint(SpawnLocation.Ship));
-                                ship.GetComponentInChildren<ShipCockpitController>().OnPressInteract();
-                                insideSomeShip = shipName;
+                            Vector3 worldPos = shipTr.TransformPoint(offset);
+                            Quaternion worldRot = shipTr.rotation * Quaternion.Euler(rotation);
+                            dummyShip = CreatePhysicalClone(ship);
+                            ship.GetComponent<OWRigidbody>().WarpToPositionRotation(worldPos, worldRot);
+                            shipTr.gameObject.SetActive(false);
+                            playerSpawner.DebugWarp(playerSpawner.GetSpawnPoint(SpawnLocation.Ship));
+                            ship.GetComponentInChildren<ShipCockpitController>().OnPressInteract();
+                            insideSomeShip = shipName;
                         }
                     };
                     if(shipDict.ContainsKey(shipName)) ModHelper.Console.WriteLine($"FlyAllShips: {shipName} already in shipDict", MessageType.Warning);
@@ -141,38 +141,51 @@ namespace FlyAllShips {
                 ModHelper.Events.Unity.FireInNUpdates(() => {
                     playerSpawner = Locator.GetPlayerBody().GetComponent<PlayerSpawner>();
                     GlobalMessenger.AddListener("ExitFlightConsole", new Callback(this.OnExitFlightConsole));
-                    Locator.GetPromptManager().AddScreenPrompt(enterShipPrompt, PromptPosition.Center, false);//TODO why are there two screen prompts???
+                    Locator.GetPromptManager().AddScreenPrompt(enterShipPrompt, PromptPosition.Center, false);
                 }, 70);
             }
         }
 
         void OnExitFlightConsole() {
             if(insideSomeShip != "") {
-                ship.GetComponent<ShipDamageController>().ToggleInvincibility();
+                GlobalMessenger.FireEvent("ExitShip");
+                //Move fake ship to real ship
                 Transform shipTr = shipDict[insideSomeShip].transform;
+                shipTr.rotation = ship.rotation * Quaternion.Inverse(Quaternion.Euler(shipDict[insideSomeShip].rotation));
+                shipTr.position = ship.position - shipTr.TransformVector(shipDict[insideSomeShip].offset);
                 ModHelper.Events.Unity.FireInNUpdates(() => {
-                    shipTr.rotation = ship.rotation * Quaternion.Inverse(Quaternion.Euler(shipDict[insideSomeShip].rotation));
-                    shipTr.position = ship.position - shipTr.TransformVector(shipDict[insideSomeShip].offset);
+                    OWRigidbody shipOw = ship.GetComponent<OWRigidbody>();
+                    /*shipOw.DisableCollisionDetection();
+                    shipOw.MakeKinematic();
+                    foreach(Renderer r in ship.GetComponentsInChildren<Renderer>()) r.enabled = false;
+                    foreach(Collider c in ship.GetComponentsInChildren<Collider>()) c.enabled = false;
+                    shipOw.WarpToPositionRotation(ship.position + Vector3.down * 20000f, ship.rotation);*/
 
-                    player.parent.parent = null;
-                    GlobalMessenger.FireEvent("ExitShip");
-                    //TODO: Need to fire event player entered sector
-                    
-                    ship.GetComponent<ShipBody>().SetPosition(thPlanet.position + thPlanet.TransformVector(new Vector3(-16.39f, -52.62f, 227.28f)));
-                    //ship.position = thPlanet.position + thPlanet.TransformVector(new Vector3(-16.39f, -52.62f, 227.28f));
-                    //ship.localEulerAngles = thPlanet.TransformDirection(new Vector3(282.62f, 1.54f, 175.17f));*/
+                    //move ship on the clone
+                    shipOw.SetVelocity(Vector3.zero);
+                    shipOw.SetAngularVelocity(Vector3.zero);
+                    shipOw.WarpToPositionRotation(dummyShip.transform.position, dummyShip.transform.rotation);
+                    Destroy(dummyShip);
 
-                    SuspendBodyAtPosition(shipTr);
-
+                    //attach fake ship and player to new reference frame
+                    OWRigidbody targetPlanet = SuspendBodyAtPosition(shipTr);
+                    if(targetPlanet == null) {
+                        ModHelper.Console.WriteLine("FlyAllShips: no reference OWRigidbody found to attach player.", MessageType.Warning);
+                    } else {
+                        OWRigidbody playerOw = Locator.GetPlayerBody();
+                        if(playerOw != null) {
+                            ////GlobalMessenger.FireEvent("PlayerRepositioned");
+                            playerOw.WarpToPositionRotation(player.position, player.rotation);
+                            playerOw.SetVelocity(targetPlanet.GetPointVelocity(player.position));
+                        }
+                    }
                     shipTr.gameObject.SetActive(true);
-                    //shipTr.Find("AttachPoint").GetComponent<SphereCollider>().enabled = true;
                     insideSomeShip = "";
-                    ship.GetComponent<ShipDamageController>().ToggleInvincibility();
                 }, 30);
             }
         }
 
-        void SuspendBodyAtPosition(Transform shipToSuspend) {
+        OWRigidbody SuspendBodyAtPosition(Transform shipToSuspend) {
             Vector3 worldPos = shipToSuspend.position;
             Collider[] cols = Physics.OverlapSphere(worldPos, 100f, OWLayerMask.closeRangeRFMask | OWLayerMask.longRangeRFMask); //tous les colliders autour
             ReferenceFrameVolume bestVol = null;
@@ -205,9 +218,10 @@ namespace FlyAllShips {
             if(rf != null) bestOw = rf.GetOWRigidBody();
             else if(bestOw == null) {
                 ModHelper.Console.WriteLine($"FlyAllShips: no ReferenceFrameVolume/OWRigidbody found at {ship.position}", MessageType.Warning);
-                return;
+                return null;
             }
             shipToSuspend.GetComponent<OWRigidbody>().Suspend(bestOw);
+            return bestOw;
         }
 
         void Update() {
@@ -245,12 +259,77 @@ namespace FlyAllShips {
                 }
                 Vector3 upward = titleShip.position - titleShipParent.position;
                 if(upward.magnitude > initAltitude || titleShipSpeed.y > 0) {
-                    titleShipSpeed.y -= Time.deltaTime * 2;//simulate gravity
+                    //store current movement relative to ship orientation
+                    Vector3 temp = titleShip.TransformDirection(Vector3.forward) * titleShipSpeed.z + titleShip.TransformDirection(Vector3.right) * titleShipSpeed.w;
+                    //rotate ship (> radial rotation)
+                    titleShip.RotateAround(titleShip.position, upward, Time.deltaTime * titleShipSpeed.x);
+                    //correct movement relative to new orientation
+                    titleShipSpeed.z = Vector3.Dot(temp, titleShip.TransformDirection(Vector3.forward));
+                    titleShipSpeed.w = Vector3.Dot(temp, titleShip.TransformDirection(Vector3.right));
+                    /*/apply surface movement components (> movement along forward perimeter)
                     titleShipParent.RotateAround(titleShipParent.position, titleShip.TransformDirection(Vector3.right), Time.deltaTime * titleShipSpeed.z);
-                    titleShipParent.RotateAround(titleShipParent.position, upward, Time.deltaTime * titleShipSpeed.x);
-                    titleShip.position += upward.normalized * Time.deltaTime * titleShipSpeed.y;
+                    //apply sideways movement component (> movement along sideways perimeter)
+                    titleShipParent.RotateAround(titleShipParent.position, titleShip.TransformDirection(Vector3.back), Time.deltaTime * titleShipSpeed.w);*/
+                    titleShipParent.rotation = Quaternion.AngleAxis(Time.deltaTime * titleShipSpeed.z, titleShip.TransformDirection(Vector3.right))
+                        * Quaternion.AngleAxis(Time.deltaTime * titleShipSpeed.w, titleShip.TransformDirection(Vector3.back))
+                        * titleShipParent.rotation;
+                    //simulate gravity
+                    titleShipSpeed.y -= Time.deltaTime * 3;
+                    //apply radial movement (> movement along radial direction)
+                    titleShip.localPosition += titleShip.localPosition.normalized * Time.deltaTime * titleShipSpeed.y;
                 } else {
-                    titleShipSpeed = Vector3.zero;
+                    titleShipSpeed = Vector4.zero;
+                }
+            }
+        }
+
+        GameObject CreatePhysicalClone(Transform source) {
+            GameObject clone = Instantiate(source.gameObject, source.position, source.rotation);
+            clone.name = "Ship_clone";
+            StripNonPhysicalComponentsRecursive(clone);
+
+            foreach(Collider col in clone.GetComponentsInChildren<Collider>()) col.isTrigger = false;
+
+            Rigidbody srcRb = source.GetComponent<Rigidbody>();
+            Rigidbody newRb = clone.GetComponent<Rigidbody>() ?? clone.AddComponent<Rigidbody>();
+            if(srcRb != null) {
+                newRb.mass = srcRb.mass;
+                newRb.drag = srcRb.drag;
+                newRb.angularDrag = srcRb.angularDrag;
+                newRb.interpolation = srcRb.interpolation;
+                newRb.collisionDetectionMode = srcRb.collisionDetectionMode;
+            }
+            newRb.useGravity = false;
+            newRb.isKinematic = false;
+
+            OWRigidbody cloneOw = clone.GetComponent<OWRigidbody>() ?? clone.AddComponent<OWRigidbody>();
+            ModHelper.Events.Unity.FireInNUpdates(() =>
+            {
+                OWRigidbody bestOw = SuspendBodyAtPosition(cloneOw.transform);
+                if(bestOw != null) {
+                    cloneOw.RegisterAttachedGravityVolume(bestOw.GetAttachedGravityVolume());
+                    cloneOw.RegisterAttachedForceDetector(bestOw.GetAttachedForceDetector());
+                    cloneOw.RegisterAttachedFluidDetector(bestOw.GetAttachedFluidDetector());
+                }
+                cloneOw.EnableCollisionDetection();
+                cloneOw.MakeNonKinematic();
+            }, 1);
+            return clone;
+
+            static void StripNonPhysicalComponentsRecursive(GameObject go) {
+                var comps = go.GetComponents<Component>();
+                foreach(var c in comps) {
+                    if(c is Transform) continue;
+                    if(c is Renderer) continue;
+                    if(c is MeshFilter) continue;
+                    if(c is MeshRenderer) continue;
+                    if(c is SkinnedMeshRenderer) continue;
+                    if(c is Collider) continue;
+                    if(c is Rigidbody) continue;
+                    Destroy(c);
+                }
+                for(int i = 0; i < go.transform.childCount; i++) {
+                    StripNonPhysicalComponentsRecursive(go.transform.GetChild(i).gameObject);
                 }
             }
         }
