@@ -1,6 +1,7 @@
 ﻿using OWML.Common;//
 using OWML.ModHelper;//
 using System.Collections.Generic;//
+using System.Linq;
 using UnityEngine;//
 
 namespace FlyAllShips {
@@ -17,7 +18,6 @@ namespace FlyAllShips {
         Transform ship;
         GameObject dummyShip;
         string insideSomeShip = "";
-        ScreenPrompt enterShipPrompt;
         readonly Dictionary<string, (Transform transform, Vector3 offset, Vector3 rotation)> shipDict = [];
 
         public void Awake() {
@@ -40,7 +40,7 @@ namespace FlyAllShips {
             if(newScene == OWScene.TitleScreen) {
                 ModHelper.Console.WriteLine("Loaded into title screen!", MessageType.Success);
                 titleShip = GameObject.Find("Structure_HEA_PlayerShip_v4_NearProxy").transform;
-                titleShipParent = new GameObject("TitleShipParent").transform;
+                if(titleShipParent == null) titleShipParent = new GameObject("TitleShipParent").transform;
                 titleShipParent.SetParent(titleShip.parent);
                 titleShipParent.localPosition = Vector3.zero;
                 titleShip.SetParent(titleShipParent);
@@ -87,14 +87,27 @@ namespace FlyAllShips {
             } else if(newScene == OWScene.SolarSystem) {
                 ModHelper.Console.WriteLine("Loaded into solar system!", MessageType.Success);
 
-                player = GameObject.Find("Player_Body/PlayerCamera").transform;
+                player = GameObject.Find("Player_Body").transform;
                 ship = GameObject.Find("Ship_Body").transform;
-                enterShipPrompt = new ScreenPrompt(InputLibrary.interact, "Enter ship");
+                OWRigidbody shipOw = ship.GetComponent<OWRigidbody>();
+                insideSomeShip = "";
+                if(dummyShip == null) {
+                    dummyShip = new("Ship_clone");
+                    dummyShip.transform.position = ship.position;
+                    dummyShip.transform.rotation = ship.rotation;
+                    foreach(string childName in new string[] { "Module_Cockpit/Geo_Cockpit/Cockpit_Geometry/Cockpit_Exterior", "Module_Cockpit/Geo_Cockpit/Cockpit_Tech/Cockpit_Tech_Exterior/SignalDishPivot/SignalDish", "Module_Cabin/Geo_Cabin/Cabin_Geometry/Cabin_Exterior", "Module_Cabin/Geo_Cabin/Cabin_Tech/Cabin_Tech_Exterior", "Module_Supplies/Geo_Supplies/Supplies_Geometry/Supplies_Exterior", "Module_Engine/Geo_Engine/Engine_Geometry/Engine_Exterior", "Module_LandingGear/LandingGear_Front/LandingGear_Front_Tech/LandingCamPivot/LandingCam", "Module_LandingGear/LandingGear_Front/Geo_LandingGear_Front", "Module_LandingGear/LandingGear_Left/Geo_LandingGear_Left", "Module_LandingGear/LandingGear_Right/Geo_LandingGear_Right" })
+                        Instantiate(ship.Find(childName), dummyShip.transform, true);
+                    dummyShip.transform.position -= 20 * Vector3.up; //prevents hitting true ship
+                    dummyShip.gameObject.AddComponent<OWRigidbody>();
+                    ModHelper.Events.Unity.FireInNUpdates(() => { SuspendBodyAtPosition(dummyShip.transform); dummyShip.SetActive(false); }, 1);
+                }
 
                 void AddShip(string shipName, Transform shipTr, Vector3 offset, Vector3 rotation) {
                     //ADD OWrb
+                    Transform targetParent = shipTr.parent;
                     shipTr.gameObject.AddComponent<OWRigidbody>();
                     shipTr.GetComponent<Rigidbody>().isKinematic = true;
+                    shipTr.SetParent(targetParent);
                     //ADD reference point
                     GameObject attachPoint = new("AttachPoint");
                     attachPoint.transform.parent = shipTr;
@@ -103,7 +116,7 @@ namespace FlyAllShips {
                     SphereCollider collider = attachPoint.AddComponent<SphereCollider>();
                     collider.isTrigger = true;
                     collider.radius = 5;
-                    ModHelper.Events.Unity.FireInNUpdates(() => { SuspendBodyAtPosition(shipTr); collider.enabled = true; }, 10);
+                    ModHelper.Events.Unity.FireInNUpdates(() => { collider.enabled = true; }, 12);
                     OWCollider attachCol = attachPoint.AddComponent<OWCollider>();
                     attachCol._collider = collider;
                     InteractReceiver interacVol = attachPoint.AddComponent<InteractReceiver>();
@@ -111,37 +124,37 @@ namespace FlyAllShips {
                     interacVol._maxViewAngle = 180;
                     interacVol._owCollider = attachCol;
                     interacVol._usableInShip = false;
-                    interacVol._screenPrompt = enterShipPrompt;
+                    interacVol._screenPrompt = new ScreenPrompt(InputLibrary.interact, $"Enter {shipName}");
                     //ADD interact events
-                    interacVol.OnGainFocus += () => { enterShipPrompt.SetText($"Enter {shipName}"); enterShipPrompt.SetVisibility(true); };
-                    interacVol.OnLoseFocus += () => { enterShipPrompt.SetVisibility(false); };
                     interacVol.OnPressInteract += () => {
                         if(insideSomeShip == "") {
                             Vector3 worldPos = shipTr.TransformPoint(offset);
                             Quaternion worldRot = shipTr.rotation * Quaternion.Euler(rotation);
-                            dummyShip = CreatePhysicalClone(ship);
-                            ship.GetComponent<OWRigidbody>().WarpToPositionRotation(worldPos, worldRot);
+                            dummyShip.SetActive(true);
+                            dummyShip.transform.position = ship.position;
+                            dummyShip.transform.rotation = ship.rotation;
+                            SuspendBodyAtPosition(dummyShip.transform);
+                            shipOw.WarpToPositionRotation(worldPos, worldRot);
                             shipTr.gameObject.SetActive(false);
                             playerSpawner.DebugWarp(playerSpawner.GetSpawnPoint(SpawnLocation.Ship));
                             ship.GetComponentInChildren<ShipCockpitController>().OnPressInteract();
                             insideSomeShip = shipName;
                         }
                     };
-                    if(shipDict.ContainsKey(shipName)) ModHelper.Console.WriteLine($"FlyAllShips: {shipName} already in shipDict", MessageType.Warning);
-                    else shipDict.Add(shipName, (shipTr, offset, rotation));
+                    if(!shipDict.ContainsKey(shipName)) shipDict.Add(shipName, (shipTr, offset, rotation));
                 }
                 Transform shipTransform;
                 shipTransform = GameObject.Find("Moon_Body/Sector_THM/Geo_THM/OtherComponentsGroup/ControlledByProxy_Structures/Structures_THM/BatchedGroup/BatchedMeshRenderers_0").transform;
                 ModHelper.Events.Unity.FireInNUpdates(() => {
                     shipTransform.localPosition = new Vector3(9, 33, -29);
                     shipTransform.localEulerAngles = new Vector3(325, 19, 329);
+                    SuspendBodyAtPosition(shipTransform);
                 }, 11);
                 AddShip("Esker's ship", shipTransform, new Vector3(44.013f, -11.448f, -49.776f), new Vector3(331.76f, 18.16f, 314.44f));
 
                 ModHelper.Events.Unity.FireInNUpdates(() => {
                     playerSpawner = Locator.GetPlayerBody().GetComponent<PlayerSpawner>();
                     GlobalMessenger.AddListener("ExitFlightConsole", new Callback(this.OnExitFlightConsole));
-                    Locator.GetPromptManager().AddScreenPrompt(enterShipPrompt, PromptPosition.Center, false);
                 }, 70);
             }
         }
@@ -165,7 +178,7 @@ namespace FlyAllShips {
                     shipOw.SetVelocity(Vector3.zero);
                     shipOw.SetAngularVelocity(Vector3.zero);
                     shipOw.WarpToPositionRotation(dummyShip.transform.position, dummyShip.transform.rotation);
-                    Destroy(dummyShip);
+                    dummyShip.SetActive(false);
 
                     //attach fake ship and player to new reference frame
                     OWRigidbody targetPlanet = SuspendBodyAtPosition(shipTr);
@@ -173,11 +186,8 @@ namespace FlyAllShips {
                         ModHelper.Console.WriteLine("FlyAllShips: no reference OWRigidbody found to attach player.", MessageType.Warning);
                     } else {
                         OWRigidbody playerOw = Locator.GetPlayerBody();
-                        if(playerOw != null) {
-                            ////GlobalMessenger.FireEvent("PlayerRepositioned");
-                            playerOw.WarpToPositionRotation(player.position, player.rotation);
-                            playerOw.SetVelocity(targetPlanet.GetPointVelocity(player.position));
-                        }
+                        playerOw.WarpToPositionRotation(player.position, player.rotation);
+                        playerOw.SetVelocity(targetPlanet.GetPointVelocity(player.position));
                     }
                     shipTr.gameObject.SetActive(true);
                     insideSomeShip = "";
@@ -188,40 +198,38 @@ namespace FlyAllShips {
         OWRigidbody SuspendBodyAtPosition(Transform shipToSuspend) {
             Vector3 worldPos = shipToSuspend.position;
             Collider[] cols = Physics.OverlapSphere(worldPos, 100f, OWLayerMask.closeRangeRFMask | OWLayerMask.longRangeRFMask); //tous les colliders autour
-            ReferenceFrameVolume bestVol = null;
-            float bestVolDist = float.MaxValue;
-            OWRigidbody bestOw = null;
-            float bestOwDist = float.MaxValue;
+            Collider col;
+            OWRigidbody ow, bestOw = null;
+            float dist, bestDist = float.MaxValue;
             ReferenceFrameVolume vol;
-            float dist;
 
             for(int i = 0; i < cols.Length; i++) {
-                vol = cols[i].GetComponent<ReferenceFrameVolume>();
-                if(vol != null) {
-                    dist = Vector3.Distance(worldPos, vol.transform.position);
-                    if(dist < bestVolDist) {
-                        bestVolDist = dist;
-                        bestVol = vol;
-                    }
-                } else if(cols[i].attachedRigidbody != null) { //fallback OWRigidbody
-                    var ow = cols[i].attachedRigidbody.GetComponent<OWRigidbody>();
-                    if(ow != null) {
-                        dist = Vector3.Distance(worldPos, ow.GetPosition());
-                        if(dist < bestOwDist) {
-                            bestOwDist = dist;
-                            bestOw = ow;
-                        }
-                    }
+                col = cols[i];
+                ModHelper.Console.WriteLine(shipToSuspend.gameObject.name +" -> "+ col.gameObject.name, MessageType.Warning);
+                if(IsChildOfExcluded(col.transform)) continue;
+                vol = col.GetComponent<ReferenceFrameVolume>();
+                ow = (vol != null ? (vol?.GetReferenceFrame()?.GetOWRigidBody()) : (col.attachedRigidbody?.GetComponent<OWRigidbody>()));
+                ModHelper.Console.WriteLine(ow?.gameObject.name + " - " + vol?.gameObject.name + " - " + col.attachedRigidbody?.GetComponent<OWRigidbody>()?.gameObject.name);
+                if(ow == null || IsChildOfExcluded(ow.transform)) continue;
+                ModHelper.Console.WriteLine(string.Join("/", [.. col.gameObject.GetComponentsInParent<Transform>().Select(t => t.name).Reverse()]));
+                dist = Vector3.Distance(worldPos, ow.GetPosition());
+                if(dist < bestDist) {
+                    bestDist = dist;
+                    bestOw = ow;
+                    ModHelper.Console.WriteLine(col.gameObject.name, MessageType.Success);
                 }
             }
-            ReferenceFrame rf = bestVol?.GetReferenceFrame();
-            if(rf != null) bestOw = rf.GetOWRigidBody();
-            else if(bestOw == null) {
-                ModHelper.Console.WriteLine($"FlyAllShips: no ReferenceFrameVolume/OWRigidbody found at {ship.position}", MessageType.Warning);
-                return null;
-            }
-            shipToSuspend.GetComponent<OWRigidbody>().Suspend(bestOw);
+            if(bestOw == null) ModHelper.Console.WriteLine($"FlyAllShips: no ReferenceFrameVolume/OWRigidbody found at {ship.position}", MessageType.Warning);
+            else shipToSuspend.GetComponent<OWRigidbody>().Suspend(bestOw);
             return bestOw;
+
+            bool IsChildOfExcluded(Transform t) {
+                if(t.IsChildOf(ship) || t.IsChildOf(shipToSuspend) || t.IsChildOf(player)) return true;
+                foreach(KeyValuePair<string, (Transform transform, Vector3 offset, Vector3 rotation)> i in shipDict) {
+                    if(t.IsChildOf(i.Value.transform)) return true;
+                }
+                return false;
+            }
         }
 
         void Update() {
@@ -282,98 +290,5 @@ namespace FlyAllShips {
                 }
             }
         }
-
-        GameObject CreatePhysicalClone(Transform source) {
-            GameObject clone = Instantiate(source.gameObject, source.position, source.rotation);
-            clone.name = "Ship_clone";
-            StripNonPhysicalComponentsRecursive(clone);
-
-            foreach(Collider col in clone.GetComponentsInChildren<Collider>()) col.isTrigger = false;
-
-            Rigidbody srcRb = source.GetComponent<Rigidbody>();
-            Rigidbody newRb = clone.GetComponent<Rigidbody>() ?? clone.AddComponent<Rigidbody>();
-            if(srcRb != null) {
-                newRb.mass = srcRb.mass;
-                newRb.drag = srcRb.drag;
-                newRb.angularDrag = srcRb.angularDrag;
-                newRb.interpolation = srcRb.interpolation;
-                newRb.collisionDetectionMode = srcRb.collisionDetectionMode;
-            }
-            newRb.useGravity = false;
-            newRb.isKinematic = false;
-
-            OWRigidbody cloneOw = clone.GetComponent<OWRigidbody>() ?? clone.AddComponent<OWRigidbody>();
-            ModHelper.Events.Unity.FireInNUpdates(() =>
-            {
-                OWRigidbody bestOw = SuspendBodyAtPosition(cloneOw.transform);
-                if(bestOw != null) {
-                    cloneOw.RegisterAttachedGravityVolume(bestOw.GetAttachedGravityVolume());
-                    cloneOw.RegisterAttachedForceDetector(bestOw.GetAttachedForceDetector());
-                    cloneOw.RegisterAttachedFluidDetector(bestOw.GetAttachedFluidDetector());
-                }
-                cloneOw.EnableCollisionDetection();
-                cloneOw.MakeNonKinematic();
-            }, 1);
-            return clone;
-
-            static void StripNonPhysicalComponentsRecursive(GameObject go) {
-                var comps = go.GetComponents<Component>();
-                foreach(var c in comps) {
-                    if(c is Transform) continue;
-                    if(c is Renderer) continue;
-                    if(c is MeshFilter) continue;
-                    if(c is MeshRenderer) continue;
-                    if(c is SkinnedMeshRenderer) continue;
-                    if(c is Collider) continue;
-                    if(c is Rigidbody) continue;
-                    Destroy(c);
-                }
-                for(int i = 0; i < go.transform.childCount; i++) {
-                    StripNonPhysicalComponentsRecursive(go.transform.GetChild(i).gameObject);
-                }
-            }
-        }
-        /* old system
-        void Update() {
-            if(OWInput.IsNewlyPressed(InputLibrary.interact) && !insideSomeShip && eskerShip != null) {
-                Vector3 eskerPos = eskerShip.position + eskerShip.TransformVector(new Vector3(45.696f, -10.3141f, -50.6333f)) - player.position;
-                float eskerPosMag = eskerPos.magnitude;
-                //ModHelper.Console.WriteLine(eskerPos.ToString(), MessageType.Info);
-                if((eskerPosMag < 15) && ((eskerPos - player.TransformDirection(Vector3.forward) * 5).magnitude < eskerPosMag)) {
-                    //ModHelper.Console.WriteLine("Vise!", MessageType.Info);
-                    ship.position = eskerShip.position + eskerShip.TransformVector(new Vector3(44, -11.45f, -50));
-                    ship.rotation = eskerShip.rotation;
-                    ship.localEulerAngles += new Vector3(331.76f, 18.16f, 314.44f);
-                    eskerShip.gameObject.SetActive(false);
-                    playerSpawner.DebugWarp(playerSpawner.GetSpawnPoint(SpawnLocation.Ship));
-                    ship.GetComponentInChildren<ShipCockpitController>().OnPressInteract();
-                    insideSomeShip = true;
-                }
-            }
-            if(insideSomeShip && Locator.GetToolModeSwapper().GetToolMode() == ToolMode.None && OWInput.IsNewlyPressed(InputLibrary.cancel, InputMode.All)) {
-                insideSomeShip = false;
-                ModHelper.Events.Unity.FireInNUpdates(() => {
-                    eskerShip.position = ship.position + ship.TransformVector(new Vector3(-36, -45, 35));
-                    eskerShip.rotation = ship.rotation;
-                    eskerShip.localEulerAngles += new Vector3(32.5f, 7, 43);
-                    eskerShip.gameObject.SetActive(true);
-                    //Collider[] colliders = ship.GetComponentsInChildren<Collider>();
-                    //foreach (Collider collider in colliders) {
-                    //    collider.enabled = false;
-                    //}
-                    //Renderer[] renderers = ship.GetComponentsInChildren<Renderer>();
-                    //foreach (Renderer renderer in renderers) {
-                    //    renderer.enabled = false;
-                    //}
-                    player.parent.parent = null;
-                    GlobalMessenger.FireEvent("ExitShip");
-                    jk//TODO: Need to fire event player entered sector
-                    ship.GetComponent<ShipBody>().SetPosition(thPlanet.position + thPlanet.TransformVector(new Vector3(-16.39f, -52.62f, 227.28f)));
-                    //ship.position = thPlanet.position + thPlanet.TransformVector(new Vector3(-16.39f, -52.62f, 227.28f));
-                    //ship.localEulerAngles = thPlanet.TransformDirection(new Vector3(282.62f, 1.54f, 175.17f));
-                }, 30);
-            }
-        }*/
     }
-
 }
